@@ -1,0 +1,50 @@
+ENV["VAGRANT_DEFAULT_PROVIDER"] = "virtualbox"
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+BOX       = "debian/debian-13"   # TODO: 1번에서 확정한 Debian 13 box
+LOGIN     = "login"             # TODO: 팀원 login
+SERVER_IP = "192.168.56.110"
+WORKER_IP = "192.168.56.111"
+
+Vagrant.configure("2") do |config|
+  config.vm.box = BOX
+  config.vm.box_check_update = false
+
+  # 공통 리소스 (최소 사양)
+  config.vm.provider "virtualbox" do |vb|
+    vb.cpus         = 1
+    vb.memory       = 1024
+    vb.linked_clone = true
+  end
+
+  # ---------- Server (controller) ----------
+  config.vm.define "#{LOGIN}S", primary: true do |server|
+    server.vm.hostname = "#{LOGIN}S"
+    server.vm.network "private_network", ip: SERVER_IP
+
+    server.vm.provider "virtualbox" do |vb|
+      vb.name = "#{LOGIN}S"
+    end
+
+    server.vm.provision "shell",
+      path: "scripts/server.sh",
+      env:  { "SERVER_IP" => SERVER_IP }
+      # TODO(6번): A안이면 env에 "K3S_TOKEN" 추가
+  end
+
+  # ---------- ServerWorker (agent) ----------
+  config.vm.define "#{LOGIN}SW" do |worker|
+    worker.vm.hostname = "#{LOGIN}SW"
+    worker.vm.network "private_network", ip: WORKER_IP
+
+    worker.vm.provider "virtualbox" do |vb|
+      vb.name = "#{LOGIN}SW"
+    end
+
+    worker.vm.provision "shell",
+      path: "scripts/worker.sh",
+      env:  { "SERVER_IP" => SERVER_IP, "WORKER_IP" => WORKER_IP }
+      # TODO(6번): A안이면 env에 "K3S_TOKEN" 추가
+  end
+end
