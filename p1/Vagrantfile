@@ -1,17 +1,23 @@
-ENV["VAGRANT_DEFAULT_PROVIDER"] = "virtualbox"
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
-BOX       = "debian/debian-13"   # TODO: 1번에서 확정한 Debian 13 box
-LOGIN     = "login"             # TODO: 팀원 login
+# box 출처: Rocky Linux 공식 배포 VirtualBox box (dl.rockylinux.org)
+# latest 파일명을 쓴다. 이미 받은 box는 이름(BOX)으로 캐시되므로 갱신하려면 vagrant box remove 후 재다운로드
+BOX       = "rockylinux-10"
+BOX_URL   = "https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-Vagrant-Vbox.latest.x86_64.vagrant.virtualbox.box"
+LOGIN     = "taebkim"
 SERVER_IP = "192.168.56.110"
 WORKER_IP = "192.168.56.111"
 
 Vagrant.configure("2") do |config|
   config.vm.box = BOX
+  config.vm.box_url = BOX_URL
   config.vm.box_check_update = false
 
-  # 공통 리소스 (최소 사양)
+  # 공유 폴더 미사용 (box의 Guest Additions 포함 여부 미확인, token 공유 방식은 F-P1-02에서 결정)
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  # 공통 리소스 (Rocky 10 최소 1GB)
   config.vm.provider "virtualbox" do |vb|
     vb.cpus         = 1
     vb.memory       = 1024
@@ -27,10 +33,10 @@ Vagrant.configure("2") do |config|
       vb.name = "#{LOGIN}S"
     end
 
+    # K3s server 설치는 F-P1-02
     server.vm.provision "shell",
       path: "scripts/server.sh",
       env:  { "SERVER_IP" => SERVER_IP }
-      # TODO(6번): A안이면 env에 "K3S_TOKEN" 추가
   end
 
   # ---------- ServerWorker (agent) ----------
@@ -42,9 +48,9 @@ Vagrant.configure("2") do |config|
       vb.name = "#{LOGIN}SW"
     end
 
+    # K3s agent 설치는 F-P1-03
     worker.vm.provision "shell",
       path: "scripts/worker.sh",
       env:  { "SERVER_IP" => SERVER_IP, "WORKER_IP" => WORKER_IP }
-      # TODO(6번): A안이면 env에 "K3S_TOKEN" 추가
   end
 end
