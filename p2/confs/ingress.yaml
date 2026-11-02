@@ -1,0 +1,39 @@
+# HOST로 분기: app1.com → app1, app2.com → app2, 그 외(다른 Host, IP만) → app3
+# Traefik은 rule이 긴 쪽을 먼저 매칭하므로 Host 조건 rule이 Host 없는 rule보다 우선한다
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: apps
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: app1.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app1
+                port:
+                  number: 80
+    - host: app2.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app2
+                port:
+                  number: 80
+    # Host 조건 없음: 기본(default) 역할
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app3
+                port:
+                  number: 80
