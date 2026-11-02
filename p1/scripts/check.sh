@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# p1 검증 스크립트 (F-P1-01: VM 2대, hostname, 전용 IP, 비밀번호 없는 ssh, 리소스)
+# p1 검증 스크립트 (F-P1-01: VM 2대, hostname, 전용 IP, 비밀번호 없는 ssh, 리소스
+#                   F-P1-02/03: K3s 노드 2개 Ready, INTERNAL-IP, control-plane, sudo 없는 kubectl)
 # 사용법: p1 디렉터리(Vagrantfile 위치)에서 ./scripts/check.sh
 #         LOGIN=다른로그인 ./scripts/check.sh  (기본값: taebkim)
 # 결과: 항목별 PASS/FAIL, FAIL이 하나라도 있으면 exit 1
@@ -16,12 +17,18 @@ SERVER_IP="192.168.56.110"
 WORKER_IP="192.168.56.111"
 VMS=("$SERVER" "$WORKER")
 MAX_MEM_MB=1024
+# vagrant up 직후 agent가 아직 NotReady일 수 있어 Ready 판정은 재시도한다
+NODES_WAIT_SEC=120
+NODES_RETRY_SEC=5
 
-GLOBAL_CHECKS=(check_vagrant_status check_vbox_running)
-VM_CHECKS=(check_ssh_nopass check_hostname check_iface check_ping check_resources show_release)
+GLOBAL_CHECKS=(check_vagrant_status check_vbox_running
+               check_kubectl_nopass check_nodes_ready check_node_ips check_control_plane)
+VM_CHECKS=(check_ssh_nopass check_hostname check_iface check_ping check_resources show_release show_free)
 
 PASS=0
 FAIL=0
+# kubectl get nodes 출력. check_kubectl_nopass가 채우고 check_nodes_ready가 갱신, 이후 K3s 항목이 재사용
+NODES=""
 ok()   { echo "  [PASS] $1"; PASS=$((PASS + 1)); }
 ko()   { echo "  [FAIL] $1"; FAIL=$((FAIL + 1)); }
 info() { echo "  [INFO] $1"; }
@@ -120,10 +127,76 @@ check_resources() {
   fi
 }
 
+# K8s 노드 이름은 hostname의 소문자
+node_of() { tr '[:upper:]' '[:lower:]' <<< "$1"; }
+
+get_nodes() { run "$SERVER" 'kubectl get nodes -o wide --no-headers'; }
+
+check_kubectl_nopass() {
+  # run은 vagrant 사용자로 실행하므로 sudo 없이 kubectl이 되는지 확인된다
+  NODES="$(get_nodes)"
+  if [[ -n "$NODES" ]]; then
+    ok "$SERVER: vagrant 사용자로 sudo 없이 kubectl get nodes"
+  else
+    ko "$SERVER: kubectl get nodes 실패 (kubectl 없음, kubeconfig 권한 또는 K3s 미동작)"
+  fi
+}
+
+nodes_all_ready() {
+  awk 'NF { n++; if ($2 == "Ready") r++ } END { exit !(n == 2 && r == 2) }' <<< "$NODES"
+}
+
+check_nodes_ready() {
+  local deadline=$((SECONDS + NODES_WAIT_SEC))
+  # kubectl 자체가 실패했으면 기다려도 소용없으므로 재시도하지 않는다
+  if [[ -n "$NODES" ]]; then
+    until nodes_all_ready || (( SECONDS >= deadline )); do
+      sleep "$NODES_RETRY_SEC"
+      NODES="$(get_nodes)"
+    done
+  fi
+  if nodes_all_ready; then
+    ok "노드 2개 모두 Ready"
+  else
+    ko "노드 2개 Ready 아님 (${NODES_WAIT_SEC}초 대기): $(awk 'NF {printf "%s=%s ", $1, $2}' <<< "$NODES")"
+  fi
+}
+
+check_node_ips() {
+  local name node want got
+  for name in "${VMS[@]}"; do
+    node="$(node_of "$name")"
+    want="$(ip_of "$name")"
+    got="$(awk -v n="$node" '$1 == n {print $6}' <<< "$NODES")"
+    if [[ "$got" == "$want" ]]; then
+      ok "node $node INTERNAL-IP = $got"
+    else
+      ko "node $node INTERNAL-IP: expected $want, got '$got'"
+    fi
+  done
+}
+
+check_control_plane() {
+  local node roles
+  node="$(node_of "$SERVER")"
+  roles="$(awk -v n="$node" '$1 == n {print $3}' <<< "$NODES")"
+  if [[ ",$roles," == *",control-plane,"* ]]; then
+    ok "node $node ROLES = $roles"
+  else
+    ko "node $node control-plane 아님 (ROLES '$roles')"
+  fi
+}
+
 show_release() {
   # 기록용, PASS/FAIL 아님
   local name="$1"
   info "release: $(run "$name" 'cat /etc/rocky-release 2>/dev/null || echo "(no /etc/rocky-release)"')"
+}
+
+show_free() {
+  # 기록용, PASS/FAIL 아님
+  local name="$1"
+  info "free -m: $(run "$name" "free -m | awk '/^Mem:/ {print \"total \" \$2 \" used \" \$3 \" available \" \$7} /^Swap:/ {print \"swap \" \$2}' | paste -sd ' '")"
 }
 
 # ---------------------------------------------------------------
