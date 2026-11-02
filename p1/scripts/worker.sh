@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # taebkimSW provisioning: K3s agent, https://SERVER_IP:6443 으로 join
 # Vagrantfile env: SERVER_IP, WORKER_IP, K3S_TOKEN, K3S_VERSION
-# vagrant provision 재실행 시: 같은 버전이 이미 동작 중이면 설치를 건너뛴다
+# vagrant provision 재실행 시: 같은 버전·인자로 동작 중이면 설치를 건너뛴다
 
 set -euo pipefail
 
@@ -53,13 +53,21 @@ done
 log "server ${SERVER_IP}:6443 열림"
 
 # ---------- K3s agent ----------
-if [[ -x "$K3S" ]] && "$K3S" --version | grep -qF "$K3S_VERSION" && systemctl is-active --quiet k3s-agent; then
-  log "K3s $K3S_VERSION agent 이미 동작 중, 설치 건너뜀"
+K3S_ARGS=(agent --node-ip "$WORKER_IP" --flannel-iface "$IFACE" --selinux)
+# 마지막으로 설치한 버전·URL·인자 기록. 바뀌면 다시 설치한다 (token은 기록하지 않음)
+STAMP=/etc/rancher/k3s/provision.stamp
+WANT="$K3S_VERSION $SERVER_URL ${K3S_ARGS[*]}"
+# pipefail에서 `k3s --version | grep -q`는 grep이 먼저 끝나 SIGPIPE(141)로 실패하므로 출력을 변수로 받는다
+have_version="$("$K3S" --version 2>/dev/null || true)"
+if [[ "$have_version" == *"$K3S_VERSION"* && "$(cat "$STAMP" 2>/dev/null)" == "$WANT" ]] \
+    && systemctl is-active --quiet k3s-agent; then
+  log "K3s $K3S_VERSION agent 같은 인자로 동작 중, 설치 건너뜀"
 else
-  log "K3s $K3S_VERSION agent 설치, join $SERVER_URL"
+  log "K3s $K3S_VERSION agent 설치, join $SERVER_URL: ${K3S_ARGS[*]}"
   curl -sfL https://get.k3s.io \
-    | INSTALL_K3S_VERSION="$K3S_VERSION" K3S_URL="$SERVER_URL" K3S_TOKEN="$K3S_TOKEN" \
-      sh -s - agent --node-ip "$WORKER_IP" --flannel-iface "$IFACE" --selinux
+    | INSTALL_K3S_VERSION="$K3S_VERSION" K3S_URL="$SERVER_URL" K3S_TOKEN="$K3S_TOKEN" sh -s - "${K3S_ARGS[@]}"
+  mkdir -p "$(dirname "$STAMP")"
+  echo "$WANT" > "$STAMP"
 fi
 
 systemctl is-active --quiet k3s-agent || {

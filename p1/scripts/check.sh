@@ -22,7 +22,7 @@ NODES_WAIT_SEC=120
 NODES_RETRY_SEC=5
 
 GLOBAL_CHECKS=(check_vagrant_status check_vbox_running
-               check_kubectl_nopass check_nodes_ready check_node_ips check_control_plane)
+               check_kubectl_nopass check_nodes_ready check_node_ips check_control_plane show_kube_system)
 VM_CHECKS=(check_ssh_nopass check_hostname check_iface check_ping check_resources show_release show_free)
 
 PASS=0
@@ -185,6 +185,19 @@ check_control_plane() {
   else
     ko "node $node control-plane 아님 (ROLES '$roles')"
   fi
+}
+
+show_kube_system() {
+  # 기록용, PASS/FAIL 아님. P1 server는 traefik, servicelb, metrics-server, local-storage를 끈다
+  local pods line
+  pods="$(run "$SERVER" 'kubectl get pods -n kube-system --no-headers' | awk '{print $1, $3}')"
+  if [[ -z "$pods" ]]; then
+    info "kube-system pod: (없음 또는 조회 실패)"
+    return
+  fi
+  while IFS= read -r line; do
+    info "kube-system pod: $line"
+  done <<< "$pods"
 }
 
 show_release() {

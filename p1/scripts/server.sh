@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # taebkimS provisioning: K3s server (controller mode) + vagrant 사용자 kubectl
 # Vagrantfile env: SERVER_IP, K3S_TOKEN, K3S_VERSION
-# vagrant provision 재실행 시: 같은 버전이 이미 동작 중이면 설치를 건너뛰고 kubeconfig만 다시 복사한다
+# vagrant provision 재실행 시: 같은 버전·인자로 동작 중이면 설치를 건너뛰고 kubeconfig만 다시 복사한다
 
 set -euo pipefail
 
@@ -46,13 +46,23 @@ fi
 log "SELinux: $(getenforce 2>/dev/null || echo 'getenforce 없음')"
 
 # ---------- K3s server ----------
-if [[ -x "$K3S" ]] && "$K3S" --version | grep -qF "$K3S_VERSION" && systemctl is-active --quiet k3s; then
-  log "K3s $K3S_VERSION 이미 동작 중, 설치 건너뜀"
+# P1은 노드 2개 Ready + kubectl만 필요. 1024MB에서 메모리가 모자라 기본 구성요소를 끈다 (P2에는 적용하지 않음)
+K3S_ARGS=(server --node-ip "$SERVER_IP" --flannel-iface "$IFACE" --selinux
+          --disable traefik --disable servicelb --disable metrics-server --disable local-storage)
+# 마지막으로 설치한 버전·인자 기록. 버전이나 인자가 바뀌면 다시 설치한다 (token은 기록하지 않음)
+STAMP=/etc/rancher/k3s/provision.stamp
+WANT="$K3S_VERSION ${K3S_ARGS[*]}"
+# pipefail에서 `k3s --version | grep -q`는 grep이 먼저 끝나 SIGPIPE(141)로 실패하므로 출력을 변수로 받는다
+have_version="$("$K3S" --version 2>/dev/null || true)"
+if [[ "$have_version" == *"$K3S_VERSION"* && "$(cat "$STAMP" 2>/dev/null)" == "$WANT" ]] \
+    && systemctl is-active --quiet k3s; then
+  log "K3s $K3S_VERSION 같은 인자로 동작 중, 설치 건너뜀"
 else
-  log "K3s $K3S_VERSION server 설치"
+  log "K3s $K3S_VERSION server 설치: ${K3S_ARGS[*]}"
   curl -sfL https://get.k3s.io \
-    | INSTALL_K3S_VERSION="$K3S_VERSION" K3S_TOKEN="$K3S_TOKEN" \
-      sh -s - server --node-ip "$SERVER_IP" --flannel-iface "$IFACE" --selinux
+    | INSTALL_K3S_VERSION="$K3S_VERSION" K3S_TOKEN="$K3S_TOKEN" sh -s - "${K3S_ARGS[@]}"
+  mkdir -p "$(dirname "$STAMP")"
+  echo "$WANT" > "$STAMP"
 fi
 
 # ---------- node Ready 대기 ----------
