@@ -1,0 +1,31 @@
+# Vagrant 머신 상태·SSH 키 (로컬 생성물)
+.vagrant/
+# K3s token 공유용으로 추정, 팀원 확인 필요
+.token/
+
+# subject PDF 등 로컬 참고자료
+docs/
+# 로컬 전용 작업 문서
+CLAUDE.md
+DECISIONS.md
+BACKLOG.md
+HANDOFF.md
+
+# 직접 받거나 빌드한 Vagrant box 파일 (용량 큼, 재생성 가능)
+*.box
+# 실행 로그 (로컬 생성물)
+*.log
+# macOS Finder 메타데이터
+.DS_Store
+# vim swap 파일
+*.swp
+*.swo
+
+# kubeconfig: 클러스터 접속 인증서 포함 (비밀)
+kubeconfig
+*.kubeconfig
+k3s.yaml
+# K3s node-token 사본: agent join 비밀값
+node-token
+# 환경 변수·비밀값 파일
+.env
