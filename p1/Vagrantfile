@@ -1,6 +1,9 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
+require "fileutils"
+require "securerandom"
+
 # box 출처: Rocky Linux 공식 배포 VirtualBox box (dl.rockylinux.org)
 # latest 파일명을 쓴다. 이미 받은 box는 이름(BOX)으로 캐시되므로 갱신하려면 vagrant box remove 후 재다운로드
 BOX       = "rockylinux-10"
@@ -9,12 +12,25 @@ LOGIN     = "taebkim"
 SERVER_IP = "192.168.56.110"
 WORKER_IP = "192.168.56.111"
 
+# K3s 버전 고정 (평가 날 stable 채널 변경으로 깨지는 것 방지). server와 agent가 같은 값을 쓴다
+K3S_VERSION = "v1.36.5+k3s1"
+
+# K3s token: 처음 실행 시 랜덤 생성, 이후 같은 값 재사용 (.vagrant/는 git 미추적, 새 clone에서는 새로 생성)
+# 클러스터가 살아 있을 때 이 파일만 지우면 server의 기존 token과 달라진다. 지울 때는 vagrant destroy와 함께
+TOKEN_FILE = File.join(__dir__, ".vagrant", "k3s-token")
+unless File.exist?(TOKEN_FILE)
+  FileUtils.mkdir_p(File.dirname(TOKEN_FILE))
+  File.write(TOKEN_FILE, SecureRandom.hex(32))
+  File.chmod(0600, TOKEN_FILE)
+end
+K3S_TOKEN = File.read(TOKEN_FILE).strip
+
 Vagrant.configure("2") do |config|
   config.vm.box = BOX
   config.vm.box_url = BOX_URL
   config.vm.box_check_update = false
 
-  # 공유 폴더 미사용 (box의 Guest Additions 포함 여부 미확인, token 공유 방식은 F-P1-02에서 결정)
+  # 공유 폴더 미사용 (box의 Guest Additions 포함 여부 미확인). token은 provision env로 전달
   config.vm.synced_folder ".", "/vagrant", disabled: true
 
   # 공통 리소스 (Rocky 10 최소 1GB)
@@ -33,10 +49,10 @@ Vagrant.configure("2") do |config|
       vb.name = "#{LOGIN}S"
     end
 
-    # K3s server 설치는 F-P1-02
+    # K3s server (controller mode)
     server.vm.provision "shell",
       path: "scripts/server.sh",
-      env:  { "SERVER_IP" => SERVER_IP }
+      env:  { "SERVER_IP" => SERVER_IP, "K3S_TOKEN" => K3S_TOKEN, "K3S_VERSION" => K3S_VERSION }
   end
 
   # ---------- ServerWorker (agent) ----------
@@ -48,9 +64,10 @@ Vagrant.configure("2") do |config|
       vb.name = "#{LOGIN}SW"
     end
 
-    # K3s agent 설치는 F-P1-03
+    # K3s agent, https://SERVER_IP:6443 으로 join
     worker.vm.provision "shell",
       path: "scripts/worker.sh",
-      env:  { "SERVER_IP" => SERVER_IP, "WORKER_IP" => WORKER_IP }
+      env:  { "SERVER_IP" => SERVER_IP, "WORKER_IP" => WORKER_IP,
+              "K3S_TOKEN" => K3S_TOKEN, "K3S_VERSION" => K3S_VERSION }
   end
 end
