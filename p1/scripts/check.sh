@@ -74,10 +74,31 @@ check_vbox_running() {
   done
 }
 
+# run과 같지만 stderr를 숨기지 않는다 (SSH 실패 원인 출력용). 결과는 PROBE_OUT, SSH_ERR
+# $(...) 안에서 부르면 subshell이라 전역 변수가 사라지므로 직접 호출한다
+PROBE_OUT=""
+SSH_ERR=""
+run_probe() {
+  local errf
+  errf="$(mktemp)"
+  PROBE_OUT="$(vagrant ssh "$1" -c 'echo ok' -- -o BatchMode=yes -o ConnectTimeout=5 2>"$errf" | tr -d '\r')"
+  SSH_ERR="$(tr -d '\r' < "$errf")"
+  rm -f "$errf"
+}
+
 check_ssh_nopass() {
-  local name="$1" got
-  got="$(run "$name" 'echo ok')"
-  if [[ "$got" == "ok" ]]; then ok "vagrant ssh 비밀번호 없이 명령 실행"; else ko "vagrant ssh 명령 실행 실패 (비밀번호 요구 또는 접속 불가)"; fi
+  local name="$1" line
+  run_probe "$name"
+  if [[ "$PROBE_OUT" == "ok" ]]; then
+    ok "vagrant ssh 비밀번호 없이 명령 실행"
+    return
+  fi
+  ko "vagrant ssh 명령 실행 실패 (비밀번호 요구 또는 접속 불가)"
+  info "stderr:"
+  while IFS= read -r line; do
+    info "  $line"
+  done <<< "${SSH_ERR:-(stderr 없음)}"
+  info "원인 힌트: 게스트 콘솔(VirtualBox GUI)에서 journalctl -u sshd | grep penalty 확인 (PerSourcePenalties)"
 }
 
 check_hostname() {
