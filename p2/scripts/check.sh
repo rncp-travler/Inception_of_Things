@@ -21,6 +21,7 @@ MAX_MEM_MB=2048
 NODES_WAIT_SEC=120
 DEPLOY_WAIT_SEC=180
 CURL_WAIT_SEC=120
+SSH_WAIT_SEC=60   # vagrant up 직후 과부하 중 SSH가 일시적으로 실패할 수 있다
 RETRY_SEC=5
 APP2_CALLS=12
 APPS=(app1 app2 app3)
@@ -74,9 +75,18 @@ check_vbox_running() {
 }
 
 check_ssh_nopass() {
-  local got
+  # 첫 SSH 호출이라 응답될 때까지 재시도한다
+  local deadline=$((SECONDS + SSH_WAIT_SEC)) got
   got="$(run 'echo ok')"
-  if [[ "$got" == "ok" ]]; then ok "vagrant ssh 비밀번호 없이 명령 실행"; else ko "vagrant ssh 명령 실행 실패 (비밀번호 요구 또는 접속 불가)"; fi
+  until [[ "$got" == "ok" ]] || (( SECONDS >= deadline )); do
+    sleep "$RETRY_SEC"
+    got="$(run 'echo ok')"
+  done
+  if [[ "$got" == "ok" ]]; then
+    ok "vagrant ssh 비밀번호 없이 명령 실행"
+  else
+    ko "vagrant ssh 명령 실행 실패 (${SSH_WAIT_SEC}초 재시도, 비밀번호 요구 또는 접속 불가)"
+  fi
 }
 
 check_hostname() {
@@ -294,6 +304,16 @@ show_free() {
 # ---------------------------------------------------------------
 if [[ ! -f Vagrantfile ]]; then
   echo "p2 디렉터리(Vagrantfile 위치)에서 실행하세요" >&2
+  exit 2
+fi
+
+# 호스트 VM에 없으면 항목이 '응답 없음' 등으로 FAIL해 원인이 가려지므로 먼저 확인한다
+missing=()
+for cmd in curl vagrant VBoxManage; do
+  command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+done
+if (( ${#missing[@]} > 0 )); then
+  echo "호스트 VM에 없는 명령: ${missing[*]} (curl은 sudo apt install -y curl)" >&2
   exit 2
 fi
 
