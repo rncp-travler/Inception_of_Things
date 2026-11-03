@@ -9,6 +9,7 @@
 # 앱 manifests 원본은 GitHub repo(taebkim-iot-p3/manifests)다. 이 script는 p3/confs/application.yaml만 apply한다
 #   (p3/confs/manifests는 평가자 참고용 v1 사본, apply 안 함)
 # 앱 접근: curl localhost:8888 (k3d loadbalancer 8888 → K3s ServiceLB → Service type LoadBalancer). port-forward 안 씀
+# host VM 재부팅 후에는 재사용하지 말고 ./clean.sh && ./setup.sh (node IP가 바뀌어 클러스터 내부 DNS가 깨진 사례, DECISIONS D9)
 
 set -u
 
@@ -130,18 +131,32 @@ install_argocd() {
     || fail "argocd-application-controller 대기"
 }
 
+# 인자: 워크로드 (deploy/x, sts/x). kubectl rollout restart가 남기는 pod template annotation
+restarted_at() {
+  k get "$1" -n "$ARGOCD_NS" -o jsonpath='{.spec.template.metadata.annotations.kubectl\.kubernetes\.io/restartedAt}' 2>/dev/null
+}
+
 set_reconciliation() {
   # Git polling 주기 단축. 문서상 repo-server, application-controller를 재시작해야 적용된다
-  # 이전 실행이 patch 후 재시작 전에 끝났을 수 있어 값이 같아도 항상 재시작한다
+  local out w
+  local workloads=(deploy/argocd-repo-server sts/argocd-application-controller)
   log "argocd-cm timeout.reconciliation=$ARGOCD_RECONCILIATION jitter=$ARGOCD_RECONCILIATION_JITTER"
-  k patch configmap argocd-cm -n "$ARGOCD_NS" --type merge \
-    -p "{\"data\":{\"timeout.reconciliation\":\"${ARGOCD_RECONCILIATION}\",\"timeout.reconciliation.jitter\":\"${ARGOCD_RECONCILIATION_JITTER}\"}}" \
-    || fail "argocd-cm patch"
-  k rollout restart deploy/argocd-repo-server -n "$ARGOCD_NS" || fail "argocd-repo-server restart"
-  k rollout restart sts/argocd-application-controller -n "$ARGOCD_NS" || fail "argocd-application-controller restart"
-  k rollout status deploy/argocd-repo-server -n "$ARGOCD_NS" --timeout="$RESTART_TIMEOUT" || fail "argocd-repo-server 재시작 대기"
-  k rollout status sts/argocd-application-controller -n "$ARGOCD_NS" --timeout="$RESTART_TIMEOUT" \
-    || fail "argocd-application-controller 재시작 대기"
+  out="$(k patch configmap argocd-cm -n "$ARGOCD_NS" --type merge \
+    -p "{\"data\":{\"timeout.reconciliation\":\"${ARGOCD_RECONCILIATION}\",\"timeout.reconciliation.jitter\":\"${ARGOCD_RECONCILIATION_JITTER}\"}}" 2>&1)" \
+    || { echo "$out"; fail "argocd-cm patch"; }
+  echo "$out"
+  # 값이 그대로면 재시작을 생략한다. 단, 이전 실행이 patch 후 재시작 전에 끝났을 수 있어
+  # 두 워크로드 모두 rollout restart 흔적(restartedAt)이 있을 때만 생략한다
+  if [[ "$out" == *"(no change)"* && -n "$(restarted_at "${workloads[0]}")" && -n "$(restarted_at "${workloads[1]}")" ]]; then
+    log "argocd-cm 변경 없음, 재시작 생략"
+    return
+  fi
+  for w in "${workloads[@]}"; do
+    k rollout restart "$w" -n "$ARGOCD_NS" || fail "$w restart"
+  done
+  for w in "${workloads[@]}"; do
+    k rollout status "$w" -n "$ARGOCD_NS" --timeout="$RESTART_TIMEOUT" || fail "$w 재시작 대기"
+  done
 }
 
 app_status() { k get application "$APP_NAME" -n "$ARGOCD_NS" -o jsonpath='{.status.sync.status} {.status.health.status}' 2>/dev/null; }

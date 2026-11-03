@@ -5,6 +5,7 @@
 #
 # 건드리지 않는 것: Docker·k3d·kubectl (install.sh로 설치한 도구), docker 이미지, kubeconfig의 다른 context
 #   (k3d가 자기 context k3d-<클러스터>는 지운다), P1/P2의 VirtualBox·Vagrant
+# host VM 재부팅 후에는 ./clean.sh && ./setup.sh 로 클러스터를 다시 만든다 (node IP 변경 후 클러스터 내부 DNS 장애 사례)
 
 set -u
 
