@@ -1,0 +1,21 @@
+# Argo CD Application: GitHub repo의 manifests/를 dev namespace에 자동 배포한다 (setup.sh가 apply)
+# 원본 manifests는 GitHub repo에만 있다. v1 → v2 변경도 GitHub repo에서만 한다
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: wil-playground
+  namespace: argocd
+spec:
+  project: default
+  source:
+    # 공개 repo라 인증 없이 HTTPS로 읽는다
+    repoURL: https://github.com/KimTaebin-ai/taebkim-iot-p3.git
+    targetRevision: HEAD
+    path: manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev   # setup.sh가 만든다 (CreateNamespace 안 씀)
+  syncPolicy:
+    automated:
+      prune: true      # repo에서 지운 리소스는 클러스터에서도 지운다
+      selfHeal: true   # 클러스터에서 직접 바꾼 것은 repo 상태로 되돌린다
