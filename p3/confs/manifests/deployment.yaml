@@ -1,0 +1,30 @@
+# v1 사본 (평가자 참고용). 원본은 GitHub repo taebkim-iot-p3의 manifests/deployment.yaml
+# 어떤 script도 이 파일을 apply하지 않는다. Argo CD는 GitHub repo만 읽는다
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wil-playground
+  namespace: dev
+  labels:
+    app: wil-playground
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wil-playground
+  template:
+    metadata:
+      labels:
+        app: wil-playground
+    spec:
+      containers:
+        - image: wil42/playground:v1
+          name: wil-playground
+          ports:
+            - name: http
+              containerPort: 8888
+          # 교체 중 아직 listen하지 않는 pod로 트래픽이 가지 않게 한다
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 2

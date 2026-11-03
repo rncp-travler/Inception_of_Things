@@ -1,0 +1,15 @@
+# 사본 (평가자 참고용). 원본은 GitHub repo taebkim-iot-p3의 manifests/service.yaml
+# type LoadBalancer: K3s ServiceLB가 노드의 8888을 열고, k3d가 호스트 8888을 그 노드로 넘긴다 (-p 8888:8888@loadbalancer)
+apiVersion: v1
+kind: Service
+metadata:
+  name: wil-playground
+  namespace: dev
+spec:
+  type: LoadBalancer
+  selector:
+    app: wil-playground
+  ports:
+    - name: http
+      port: 8888
+      targetPort: 8888   # deployment containerPort
