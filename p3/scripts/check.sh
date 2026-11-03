@@ -3,11 +3,13 @@
 #                   F-P3-02: k3d 클러스터, 8888 매핑, ns argocd/dev, Argo CD
 #                   F-P3-03/04: Application 설정·Synced/Healthy, dev 앱 버전, localhost:8888 응답)
 # 사용법: ./check.sh v1|v2  (어느 디렉터리에서 실행해도 된다. 인자 = GitHub repo에 올라가 있는 이미지 태그)
-#         WAIT_SEC=300 ./check.sh v2  (재시도 항목 전체 대기, 기본 180초)
+#         WAIT_SEC=180 ./check.sh v2  (재시도 항목 전체 대기, 기본 90초)
 # 결과: 항목별 PASS/FAIL, FAIL이 하나라도 있으면 exit 1. 사용법·사전 조건 오류는 exit 2
 #
 # 버전 기대값은 versions.env에서 읽는다. Docker는 버전을 고정하지 않아 sudo 없이 docker info 성공만 본다
 # push 직후 바로 실행해도 되도록 앱 버전·응답·sync 상태는 WAIT_SEC 동안 재시도한다
+# kubectl·docker·k3d·curl 호출마다 timeout을 둔다 (host 재부팅 후 클러스터 장애 중 check.sh가 끝나지 않은 적 있음)
+# host 재부팅 후에는 ./clean.sh && ./setup.sh 로 다시 만든다 (node IP가 바뀌어 클러스터 내부 DNS가 깨진 사례, DECISIONS D9)
 
 set -u
 
@@ -23,17 +25,23 @@ APP_PORT=8888
 APP_IMAGE="wil42/playground"
 REPO_URL="https://github.com/KimTaebin-ai/taebkim-iot-p3.git"
 REPO_PATH="manifests"
-WAIT_SEC="${WAIT_SEC:-180}"
+WAIT_SEC="${WAIT_SEC:-90}"
 RETRY_SEC="${RETRY_SEC:-5}"
+CALL_SEC=5        # kubectl·docker·k3d 호출 하나의 상한
+LSREMOTE_SEC=20   # repo-server 안 git ls-remote 상한
 
 CHECKS=(check_docker check_k3d_version check_kubectl_version
-        check_cluster check_port check_nodes check_node_version check_ns
-        check_argocd_pods check_argocd_version check_reconciliation check_app_spec
+        check_cluster check_port check_api check_nodes check_node_version check_ns
+        check_argocd_pods check_argocd_version check_reconciliation check_app_spec check_repo_access
         check_app_image check_app_pods check_curl check_app_status)
+# Kubernetes API가 필요한 항목. check_api가 실패하면 하나씩 timeout을 기다리지 않고 생략한다
+KUBE_CHECKS=(check_nodes check_node_version check_ns check_argocd_pods check_argocd_version check_reconciliation
+             check_app_spec check_repo_access check_app_image check_app_pods check_app_status)
 
 PASS=0
 FAIL=0
-RETRY_DEADLINE=0   # 재시도 항목이 공유하는 마감 시각 (첫 재시도 항목에서 정한다)
+RETRY_DEADLINE=""   # 재시도 항목이 공유하는 마감 시각 (첫 재시도 항목에서 정한다)
+API_OK=1
 ok()   { echo "  [PASS] $1"; PASS=$((PASS + 1)); }
 ko()   { echo "  [FAIL] $1"; FAIL=$((FAIL + 1)); }
 info() { echo "  [INFO] $1"; }
@@ -47,11 +55,22 @@ info_lines() {
 }
 
 # 다른 kubeconfig context가 있어도 이 클러스터만 본다
-k() { kubectl --context "$KCTX" "$@" 2>/dev/null; }
+# --request-timeout은 API 요청에만 걸리므로 바깥에 timeout(1)도 둔다
+k()  { timeout $((CALL_SEC + 2)) kubectl --context "$KCTX" --request-timeout="${CALL_SEC}s" "$@" 2>/dev/null; }
+d()  { timeout "$CALL_SEC" docker "$@"; }
+k3() { timeout "$CALL_SEC" k3d "$@"; }
+
+needs_api() {
+  local c
+  for c in "${KUBE_CHECKS[@]}"; do
+    [[ "$c" == "$1" ]] && return 0
+  done
+  return 1
+}
 
 # 인자: 판정 함수와 인자. RETRY_DEADLINE까지 RETRY_SEC 간격으로 다시 부른다
 retry() {
-  (( RETRY_DEADLINE == 0 )) && RETRY_DEADLINE=$((SECONDS + WAIT_SEC))
+  [[ -n "$RETRY_DEADLINE" ]] || RETRY_DEADLINE=$((SECONDS + WAIT_SEC))
   until "$@"; do
     (( SECONDS >= RETRY_DEADLINE )) && return 1
     sleep "$RETRY_SEC"
@@ -61,28 +80,28 @@ retry() {
 # ---------------------------------------------------------------
 check_docker() {
   # root가 아닌 사용자로 성공하면 docker 그룹 권한이 적용된 것
-  if docker info >/dev/null 2>&1; then
+  if d info >/dev/null 2>&1; then
     ok "sudo 없이 docker info"
   else
     ko "docker info 실패 (docker 그룹 추가 후 재로그인했는지 id -nG 확인, dockerd 동작 확인)"
   fi
-  info "$(docker --version 2>/dev/null || echo 'docker --version 실패')"
+  info "$(d --version 2>/dev/null || echo 'docker --version 실패')"
 }
 
 check_k3d_version() {
   local got
-  got="$(k3d version 2>/dev/null | sed -n 's/^k3d version //p' | head -n 1)"
+  got="$(k3 version 2>/dev/null | sed -n 's/^k3d version //p' | head -n 1)"
   if [[ "$got" == "$K3D_VERSION" ]]; then ok "k3d $got"; else ko "k3d: expected $K3D_VERSION, got '${got:-없음}'"; fi
 }
 
 check_kubectl_version() {
   local got
-  got="$(kubectl version --client -o json 2>/dev/null | grep -o '"gitVersion": *"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+  got="$(timeout "$CALL_SEC" kubectl version --client -o json 2>/dev/null | grep -o '"gitVersion": *"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
   if [[ "$got" == "$KUBECTL_VERSION" ]]; then ok "kubectl client $got"; else ko "kubectl client: expected $KUBECTL_VERSION, got '${got:-없음}'"; fi
 }
 
 check_cluster() {
-  if k3d cluster list --no-headers 2>/dev/null | awk -v c="$CLUSTER" '$1 == c {f = 1} END {exit !f}'; then
+  if k3 cluster list --no-headers 2>/dev/null | awk -v c="$CLUSTER" '$1 == c {f = 1} END {exit !f}'; then
     ok "k3d cluster $CLUSTER"
   else
     ko "k3d cluster $CLUSTER 없음 (setup.sh 실행)"
@@ -92,12 +111,21 @@ check_cluster() {
 check_port() {
   # docker port 출력 예: "8888/tcp -> 0.0.0.0:8888" (IPv6 "[::]:8888" 줄이 같이 나올 수 있다)
   local lb="k3d-${CLUSTER}-serverlb" ports
-  ports="$(docker port "$lb" 2>/dev/null)"
+  ports="$(d port "$lb" 2>/dev/null)"
   if grep -q "^${APP_PORT}/tcp -> 0\.0\.0\.0:${APP_PORT}\$" <<< "$ports"; then
     ok "$lb ${APP_PORT}/tcp -> 0.0.0.0:${APP_PORT}"
   else
     ko "$lb 에 ${APP_PORT}/tcp -> 0.0.0.0:${APP_PORT} 매핑 없음"
     info_lines "docker port: " "${ports:-(출력 없음)}"
+  fi
+}
+
+check_api() {
+  if [[ "$(k get --raw=/readyz)" == "ok" ]]; then
+    ok "Kubernetes API 응답 (/readyz)"
+  else
+    API_OK=0
+    ko "Kubernetes API 응답 없음 (${CALL_SEC}초) → kubectl 항목 생략. host 재부팅 후라면 ./clean.sh && ./setup.sh"
   fi
 }
 
@@ -183,6 +211,22 @@ check_app_spec() {
   fi
 }
 
+check_repo_access() {
+  # repo-server가 실제로 GitHub에 닿는지. Application이 Unknown이면 auto-sync가 건너뛰어져 v2를 기다려도 소용없다
+  local out head
+  out="$(timeout $((LSREMOTE_SEC + 5)) kubectl --context "$KCTX" -n "$ARGOCD_NS" exec deploy/argocd-repo-server -- \
+    timeout "$LSREMOTE_SEC" git ls-remote "$REPO_URL" HEAD 2>&1)"
+  head="$(grep -E $'^[0-9a-f]{40}\tHEAD$' <<< "$out" | head -n 1)"
+  if [[ -n "$head" ]]; then
+    ok "repo-server → $REPO_URL HEAD ${head:0:7}"
+  else
+    ko "repo-server에서 $REPO_URL 접근 실패 (클러스터 내부 DNS/네트워크 장애 추정, host 재부팅 후 흔함) → ./clean.sh && ./setup.sh"
+    info "git ls-remote: $(grep . <<< "$out" | tail -n 1)"
+    # sync가 안 되는 상태라 재시도 항목은 기다리지 않고 한 번만 본다
+    RETRY_DEADLINE=$SECONDS
+  fi
+}
+
 app_image_is() { [[ "$(k get deploy "$APP_NAME" -n "$APP_NS" -o jsonpath='{.spec.template.spec.containers[0].image}')" == "$1" ]]; }
 
 check_app_image() {
@@ -208,7 +252,7 @@ check_app_pods() {
 # 응답 예: {"status":"ok", "message": "v1"}
 LAST_BODY=""
 curl_message_is() {
-  LAST_BODY="$(curl -s -m 5 "http://localhost:${APP_PORT}/" 2>/dev/null)"
+  LAST_BODY="$(curl -s --connect-timeout 3 --max-time 5 "http://localhost:${APP_PORT}/" 2>/dev/null)"
   [[ "$(sed -n 's/.*"message": *"\([^"]*\)".*/\1/p' <<< "$LAST_BODY")" == "$1" ]]
 }
 
@@ -235,10 +279,15 @@ diag() {
   # FAIL이 있을 때만, 원인 추적용
   echo
   echo "== 진단 =="
+  if (( ! API_OK )); then
+    info_lines "docker: " "$(d ps -a --filter "name=k3d-${CLUSTER}" --format '{{.Names}} {{.Status}}' 2>/dev/null)"
+    return
+  fi
   info_lines "app: " "$(k get application "$APP_NAME" -n "$ARGOCD_NS" \
     -o jsonpath='sync={.status.sync.status} health={.status.health.status} revision={.status.sync.revision} op={.status.operationState.phase} {.status.operationState.message}')"
   info_lines "app condition: " "$(k get application "$APP_NAME" -n "$ARGOCD_NS" \
     -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}')"
+  info_lines "coredns: " "$(k get pods -n kube-system -l k8s-app=kube-dns -o wide --no-headers)"
   info_lines "dev: " "$(k get pods,svc -n "$APP_NS" -o wide)"
   info_lines "dev event: " "$(k get events -n "$APP_NS" --sort-by=.lastTimestamp | tail -n 10)"
 }
@@ -268,7 +317,7 @@ done
 
 # 도구가 없으면 항목이 '없음'으로 FAIL해 원인이 가려지므로 먼저 확인한다
 missing=()
-for cmd in docker k3d kubectl curl; do
+for cmd in docker k3d kubectl curl timeout; do
   command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 if (( ${#missing[@]} > 0 )); then
@@ -277,9 +326,15 @@ if (( ${#missing[@]} > 0 )); then
 fi
 
 echo "== p3: cluster $CLUSTER, 기대 앱 버전 $WANT =="
+skipped=()
 for check in "${CHECKS[@]}"; do
+  if (( ! API_OK )) && needs_api "$check"; then
+    skipped+=("$check")
+    continue
+  fi
   "$check"
 done
+(( ${#skipped[@]} > 0 )) && info "API 응답 없음으로 생략: ${skipped[*]}"
 
 (( FAIL > 0 )) && diag
 echo
