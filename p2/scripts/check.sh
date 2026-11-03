@@ -74,10 +74,29 @@ check_vbox_running() {
   fi
 }
 
+# run과 같지만 stderr를 숨기지 않는다 (SSH 실패 원인 출력용). 결과는 PROBE_OUT, SSH_ERR
+# $(...) 안에서 부르면 subshell이라 전역 변수가 사라지므로 직접 호출한다
+PROBE_OUT=""
+SSH_ERR=""
+run_probe() {
+  local errf
+  errf="$(mktemp)"
+  PROBE_OUT="$(vagrant ssh "$SERVER" -c 'echo ok' -- -o BatchMode=yes -o ConnectTimeout=5 2>"$errf" | tr -d '\r')"
+  SSH_ERR="$(tr -d '\r' < "$errf")"
+  rm -f "$errf"
+}
+
 check_ssh_nopass() {
-  # 첫 SSH 호출이라 응답될 때까지 재시도한다
-  local deadline=$((SECONDS + SSH_WAIT_SEC)) got
-  got="$(run 'echo ok')"
+  # 첫 SSH 호출이라 응답될 때까지 재시도한다. 첫 실패의 stderr는 출력한다
+  local deadline=$((SECONDS + SSH_WAIT_SEC)) got line
+  run_probe
+  got="$PROBE_OUT"
+  if [[ "$got" != "ok" ]]; then
+    info "vagrant ssh 첫 시도 실패, stderr:"
+    while IFS= read -r line; do
+      info "  $line"
+    done <<< "${SSH_ERR:-(stderr 없음)}"
+  fi
   until [[ "$got" == "ok" ]] || (( SECONDS >= deadline )); do
     sleep "$RETRY_SEC"
     got="$(run 'echo ok')"
@@ -86,6 +105,7 @@ check_ssh_nopass() {
     ok "vagrant ssh 비밀번호 없이 명령 실행"
   else
     ko "vagrant ssh 명령 실행 실패 (${SSH_WAIT_SEC}초 재시도, 비밀번호 요구 또는 접속 불가)"
+    info "원인 힌트: 게스트 콘솔(VirtualBox GUI)에서 journalctl -u sshd | grep penalty 확인 (PerSourcePenalties, HANDOFF 트러블슈팅)"
   fi
 }
 

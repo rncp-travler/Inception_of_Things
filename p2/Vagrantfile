@@ -27,6 +27,35 @@ unless File.exist?(TOKEN_FILE)
 end
 K3S_TOKEN = File.read(TOKEN_FILE).strip
 
+# sshd PerSourcePenalties 예외: VirtualBox NAT에서는 vagrant ssh·provision·check.sh가 모두 게이트웨이 10.0.2.2에서 들어온다.
+# 벌점이 걸리면 모든 SSH가 끊기므로(journalctl -u sshd: "penalty: exceeded LoginGraceTime") 10.0.2.2만 예외로 둔다.
+# 00- 접두어: sshd_config는 키워드마다 처음 읽은 값을 쓰고, Include glob은 사전순으로 읽는다 (man sshd_config).
+# Rocky의 sshd_config는 맨 앞에서 sshd_config.d/*.conf를 Include한다 → 실제 적용값은 sshd -T로 확인한다
+SSHD_NAT_FIX = <<~'SH'
+  set -euo pipefail
+  conf=/etc/ssh/sshd_config.d/00-vagrant-nat.conf
+  want="PerSourcePenaltyExemptList 10.0.2.2"
+  if [[ "$(cat "$conf" 2>/dev/null)" == "$want" ]]; then
+    echo "[sshd] $conf 같은 내용, reload 생략"
+    exit 0
+  fi
+  echo "$want" > "$conf"
+  chmod 600 "$conf"
+  if ! sshd -t; then
+    rm -f "$conf"
+    echo "[sshd] ERROR: sshd -t 실패, $conf 제거" >&2
+    exit 1
+  fi
+  # pipefail에서 grep -q가 먼저 끝나면 SIGPIPE로 실패하므로 출력을 변수로 받는다
+  effective="$(sshd -T)"
+  if ! grep -qix "persourcepenaltyexemptlist 10.0.2.2" <<< "$effective"; then
+    echo "[sshd] ERROR: 적용값이 다름: $(grep -i persourcepenaltyexemptlist <<< "$effective" || echo 없음)" >&2
+    exit 1
+  fi
+  systemctl reload sshd
+  echo "[sshd] PerSourcePenaltyExemptList 10.0.2.2 적용, sshd reload"
+SH
+
 Vagrant.configure("2") do |config|
   config.vm.box = BOX
   config.vm.box_url = BOX_URL
@@ -34,6 +63,9 @@ Vagrant.configure("2") do |config|
 
   # 공유 폴더 미사용 (box의 Guest Additions 포함 여부 미확인)
   config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  # 바깥 scope provisioner는 VM별 provisioner보다 먼저 실행된다 → 첫 단계
+  config.vm.provision "sshd-nat-penalty", type: "shell", inline: SSHD_NAT_FIX
 
   # ---------- Server (K3s server mode) ----------
   config.vm.define "#{LOGIN}S", primary: true do |server|
