@@ -213,7 +213,7 @@ check_app_spec() {
 
 check_repo_access() {
   # repo-server가 실제로 GitHub에 닿는지. Application이 Unknown이면 auto-sync가 건너뛰어져 v2를 기다려도 소용없다
-  local out head
+  local out head reason
   out="$(timeout $((LSREMOTE_SEC + 5)) kubectl --context "$KCTX" -n "$ARGOCD_NS" exec deploy/argocd-repo-server -- \
     timeout "$LSREMOTE_SEC" git ls-remote "$REPO_URL" HEAD 2>&1)"
   head="$(grep -E $'^[0-9a-f]{40}\tHEAD$' <<< "$out" | head -n 1)"
@@ -221,7 +221,9 @@ check_repo_access() {
     ok "repo-server → $REPO_URL HEAD ${head:0:7}"
   else
     ko "repo-server에서 $REPO_URL 접근 실패 (클러스터 내부 DNS/네트워크 장애 추정, host 재부팅 후 흔함) → ./clean.sh && ./setup.sh"
-    info "git ls-remote: $(grep . <<< "$out" | tail -n 1)"
+    # kubectl exec의 "command terminated with exit code" 줄보다 git 오류 원인 줄을 먼저 보여 준다
+    reason="$(grep -E 'fatal:|Could not resolve' <<< "$out" | tail -n 1)"
+    info "git ls-remote: ${reason:-$(grep . <<< "$out" | tail -n 1)}"
     # sync가 안 되는 상태라 재시도 항목은 기다리지 않고 한 번만 본다
     RETRY_DEADLINE=$SECONDS
   fi
