@@ -16,7 +16,7 @@ die() { echo "$TAG ERROR: $*" >&2; exit 1; }
 
 K3S=/usr/local/bin/k3s   # sudo secure_path에 /usr/local/bin이 없어 절대경로로 쓴다
 READY_TIMEOUT=180
-APPS_TIMEOUT=300   # 이미지 pull, Traefik helm 설치까지 포함한 대기 시간
+APPS_TIMEOUT=600   # 이미지 pull(캠퍼스에서 약 80초), Traefik helm 설치 재시도까지 포함한 대기 시간
 APPS=(app1 app2 app3)
 NODE_NAME="$(hostname | tr '[:upper:]' '[:lower:]')"   # K8s 노드 이름은 소문자
 USER_NAME=vagrant
@@ -49,8 +49,10 @@ fi
 log "SELinux: $(getenforce 2>/dev/null || echo 'getenforce 없음')"
 
 # ---------- K3s server ----------
-# 기본 구성요소를 끄지 않는다: Traefik이 Ingress controller, servicelb가 노드 IP의 80 포트를 연다
-K3S_ARGS=(server --node-ip "$SERVER_IP" --flannel-iface "$IFACE" --selinux)
+# Traefik(Ingress controller)과 servicelb(노드 IP의 80 포트)는 유지한다
+# metrics-server, local-storage는 P2에 필요 없고, 캠퍼스 1차에서 과부하 중 probe timeout·재시작이 있어 끈다
+K3S_ARGS=(server --node-ip "$SERVER_IP" --flannel-iface "$IFACE" --selinux
+          --disable metrics-server --disable local-storage)
 # 마지막으로 설치한 버전·인자 기록. 버전이나 인자가 바뀌면 다시 설치한다 (token은 기록하지 않음)
 STAMP=/etc/rancher/k3s/provision.stamp
 WANT="$K3S_VERSION ${K3S_ARGS[*]}"
@@ -96,6 +98,7 @@ dump_diag() {
   kc get pods -A -o wide || true
   kc get deploy,svc,endpointslices,ingress -A || true
   kc describe ingress || true
+  kc -n kube-system logs job/helm-install-traefik --tail=50 || true
   kc -n kube-system logs deploy/traefik --tail=50 || true
   kc get events -A --sort-by=.lastTimestamp | tail -n 30 || true
   free -m || true
@@ -136,7 +139,10 @@ for app in "${APPS[@]}"; do
   rollout default "deployment/$app"
 done
 
-# traefik deployment는 helm-install-traefik job이 만든다
+# traefik deployment는 helm-install-traefik job이 만든다. job은 실패해도 재시도하므로 Complete까지 기다린다
+job="$(wait_exists kube-system job helm-install-traefik)" || fail "kube-system job helm-install-traefik 이 생기지 않음"
+kc -n kube-system wait --for=condition=complete "$job" --timeout="$(remaining)s" \
+  || fail "kube-system $job 이 ${APPS_TIMEOUT}초 안에 완료되지 않음"
 traefik="$(wait_exists kube-system deployment traefik)" || fail "kube-system deployment traefik 이 생기지 않음"
 rollout kube-system "$traefik"
 # servicelb DaemonSet 이름에는 hash가 붙는다 (svclb-traefik-xxxx)

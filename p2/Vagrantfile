@@ -46,6 +46,8 @@ Vagrant.configure("2") do |config|
       vb.cpus         = 2
       vb.memory       = 2048
       vb.linked_clone = true
+      # Rocky box는 IO-APIC가 꺼진 채 배포되어 cpus 2여도 게스트가 CPU 1개로 부팅한다 (dmesg "SMP disabled")
+      vb.customize ["modifyvm", :id, "--ioapic", "on"]
     end
 
     # file provisioner는 대상 디렉터리가 이미 있으면 그 안에 confs/를 하나 더 만들므로 먼저 지운다
